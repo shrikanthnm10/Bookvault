@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - ALB Stack (eu-north-1 / Stockholm)
+  Creates Application Load Balancer with its own Security Group,
+  Target Group, and Listeners (HTTP:80 → HTTPS redirect, HTTPS:443)
+
+Parameters:
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) ACM Certificate ARN for HTTPS listener.
+      Leave empty to use HTTP only on port 80.
+
+  HealthCheckPath:
+    Type: String
+    Default: /health
+    Description: Health check path for the target group
+
+  AppPort:
+    Type: Number
+    Default: 5000
+    Description: Application port that ECS containers listen on
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+
+  # ─────────────────────────────────────────
+  # ALB Security Group
+  # ─────────────────────────────────────────
+  BookVaultALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: bookvault-alb-sg
+      GroupDescription: Security group for BookVault Application Load Balancer
+      VpcId: !ImportValue bookvault-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP from anywhere
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          CidrIp: 0.0.0.0/0
+          Description: Allow outbound to ECS tasks on app port (5000)
+      Tags:
+        - Key: Name
+          Value: bookvault-alb-sg
+        - Key: Owner
+          Value: BookVault
+        - Key: Environment
+          Value: Prod
+
+  # ─────────────────────────────────────────
+  # Application Load Balancer
+  # ─────────────────────────────────────────
+  BookVaultALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: bookvault-alb
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !ImportValue bookvault-public-subnet-1-id
+        - !ImportValue bookvault-public-subnet-2-id
+      SecurityGroups:
+        - !Ref BookVaultALBSecurityGroup
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+        - Key: access_logs.s3.enabled
+          Value: 'false'
+        - Key: deletion_protection.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: bookvault-alb
+        - Key: Owner
+          Value: BookVault
+        - Key: Environment
+          Value: Prod
+
+  # ─────────────────────────────────────────
+  # Target Group (points to ECS on port 5000)
+  # ─────────────────────────────────────────
+  BookVaultTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: bookvault-tg
+      Protocol: HTTP
+      Port: !Ref AppPort
+      VpcId: !ImportValue bookvault-vpc-id
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckPort: !Ref AppPort
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200-299'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: bookvault-tg
+        - Key: Owner
+          Value: BookVault
+        - Key: Environment
+          Value: Prod
+
+  # ─────────────────────────────────────────
+  # HTTP Listener (port 80)
+  # ─────────────────────────────────────────
+  BookVaultHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BookVaultALB
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref BookVaultTargetGroup
+
+  # ─────────────────────────────────────────
+  # HTTPS Listener (port 443) - only if cert provided
+  # ─────────────────────────────────────────
+  BookVaultHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref BookVaultALB
+      Protocol: HTTPS
+      Port: 443
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BookVaultTargetGroup
+
+Outputs:
+  ALBArn:
+    Description: ALB ARN
+    Value: !Ref BookVaultALB
+    Export:
+      Name: bookvault-alb-arn
+
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt BookVaultALB.DNSName
+    Export:
+      Name: bookvault-alb-dns
+
+  ALBHostedZoneId:
+    Description: ALB Hosted Zone ID (for Route 53 alias)
+    Value: !GetAtt BookVaultALB.CanonicalHostedZoneID
+    Export:
+      Name: bookvault-alb-hosted-zone-id
+
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref BookVaultALBSecurityGroup
+    Export:
+      Name: bookvault-alb-sg-id
+
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref BookVaultTargetGroup
+    Export:
+      Name: bookvault-tg-arn

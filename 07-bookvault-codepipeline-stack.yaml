@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - CodePipeline Stack (eu-north-1 / Stockholm)
+  GitHub Webhook → CodeBuild → ECS Deploy
+
+Parameters:
+  PipelineName:
+    Type: String
+    Default: bookvault-pipeline
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner (username or org)
+
+  GitHubRepo:
+    Type: String
+    Default: bookvault-app
+
+  GitHubBranch:
+    Type: String
+    Default: main
+
+  CodeBuildProjectName:
+    Type: String
+    Default: bookvault-build
+
+  ECSClusterName:
+    Type: String
+    Default: bookvault-cluster
+
+  ECSServiceName:
+    Type: String
+    Default: bookvault-service
+
+  GitHubSecretName:
+    Type: String
+    Default: github-token
+    Description: >
+      Name of the Secrets Manager secret holding the GitHub OAuth token.
+      Secret must have a key called "token".
+
+Resources:
+
+  # -------------------------
+  # Artifact Bucket
+  # -------------------------
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "bookvault-pipeline-artifacts-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: bookvault-pipeline-artifacts
+
+  # -------------------------
+  # IAM Role for CodePipeline
+  # -------------------------
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bookvault-codepipeline-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/IAMReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+
+  # -------------------------
+  # CodePipeline
+  # -------------------------
+  BookVaultPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref PipelineName
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      PipelineType: V2
+      ExecutionMode: SUPERSEDED
+
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+
+      Stages:
+        # -------- SOURCE --------
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: '1'
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Sub "{{resolve:secretsmanager:${GitHubSecretName}:SecretString:token}}"
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+        # -------- BUILD --------
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectName
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+        # -------- DEPLOY --------
+        - Name: Deploy
+          Actions:
+            - Name: DeployToECS
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              Configuration:
+                ClusterName: !Ref ECSClusterName
+                ServiceName: !Ref ECSServiceName
+                FileName: imagedefinitions.json
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+  # -------------------------
+  # GitHub Webhook
+  # -------------------------
+  GitHubWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Name: bookvault-github-webhook
+      TargetPipeline: !Ref BookVaultPipeline
+      TargetAction: GitHubSource
+      TargetPipelineVersion: 1
+      RegisterWithThirdParty: true
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Sub "{{resolve:secretsmanager:${GitHubSecretName}:SecretString:token}}"
+      Filters:
+        - JsonPath: "$.ref"
+          MatchEquals: "refs/heads/{Branch}"
+
+Outputs:
+  PipelineName:
+    Description: CodePipeline Name
+    Value: !Ref BookVaultPipeline
+
+  PipelineArn:
+    Description: CodePipeline ARN
+    Value: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${BookVaultPipeline}
+
+  ArtifactBucketName:
+    Description: S3 Artifact Bucket Name
+    Value: !Ref PipelineArtifactBucket

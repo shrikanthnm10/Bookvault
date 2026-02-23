@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - ECS Fargate Stack (eu-north-1 / Stockholm)
+  ECS Cluster, Task Definition, Service with ALB integration and RDS secrets
+
+Parameters:
+  AppPort:
+    Type: Number
+    Default: 5000
+
+  ImageTag:
+    Type: String
+    Default: latest
+
+  SecretsManagerArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret holding the RDS password.
+      Example: arn:aws:secretsmanager:eu-north-1:123456789012:secret:bookvault-rds-secret-XXXXXX
+    Default: ''
+
+Conditions:
+  HasSecret: !Not [!Equals [!Ref SecretsManagerArn, '']]
+
+Resources:
+
+  # --------------------
+  # ECS Service Security Group
+  # --------------------
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ALB to access BookVault ECS tasks
+      VpcId: !ImportValue bookvault-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !ImportValue bookvault-alb-sg-id
+          Description: Allow traffic from ALB only
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (ECR pull, RDS, CloudWatch)
+      Tags:
+        - Key: Name
+          Value: bookvault-ecs-sg
+
+  # --------------------
+  # ECS Cluster
+  # --------------------
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: bookvault-cluster
+      Tags:
+        - Key: Name
+          Value: bookvault-cluster
+        - Key: Environment
+          Value: Prod
+
+  # --------------------
+  # CloudWatch Logs
+  # --------------------
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/bookvault-app
+      RetentionInDays: 30
+
+  # --------------------
+  # ECS Task Execution Role
+  # --------------------
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bookvault-ecs-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: AllowSecretsManagerRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:eu-north-1:${AWS::AccountId}:secret:bookvault-rds-secret*
+
+  # --------------------
+  # ECS Task Definition
+  # --------------------
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: bookvault-app
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: bookvault-app
+          Image:
+            Fn::Sub:
+              - "${ECR_URI}:${TAG}"
+              - ECR_URI: !ImportValue bookvault-ecr-uri
+                TAG: !Ref ImageTag
+          PortMappings:
+            - ContainerPort: 5000
+          Environment:
+            - Name: PORT
+              Value: "5000"
+            - Name: DB_HOST
+              Value: !ImportValue bookvault-rds-endpoint
+            - Name: DB_NAME
+              Value: !ImportValue bookvault-db-name
+            - Name: DB_USER
+              Value: admin
+          Secrets:
+            - Name: DB_PASSWORD
+              ValueFrom: !If
+                - HasSecret
+                - !Ref SecretsManagerArn
+                - !Sub arn:aws:secretsmanager:eu-north-1:${AWS::AccountId}:secret:bookvault-rds-secret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/bookvault-app
+              awslogs-region: eu-north-1
+              awslogs-stream-prefix: ecs
+
+  # --------------------
+  # ECS Service
+  # --------------------
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ECSLogGroup
+    Properties:
+      ServiceName: bookvault-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSServiceSecurityGroup
+          Subnets:
+            - !ImportValue bookvault-private-subnet-1-id
+            - !ImportValue bookvault-private-subnet-2-id
+      LoadBalancers:
+        - ContainerName: bookvault-app
+          ContainerPort: 5000
+          TargetGroupArn: !ImportValue bookvault-tg-arn
+
+Outputs:
+  ECSClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+    Export:
+      Name: bookvault-ecs-cluster-name
+
+  ECSSecurityGroupId:
+    Description: ECS Service Security Group ID
+    Value: !Ref ECSServiceSecurityGroup
+    Export:
+      Name: bookvault-ecs-sg-id
+
+  ECSTaskExecutionRoleArn:
+    Description: ECS Task Execution Role ARN
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: bookvault-ecs-execution-role-arn

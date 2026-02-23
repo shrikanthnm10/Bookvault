@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - RDS MySQL Stack (eu-north-1 / Stockholm)
+  Creates a MySQL RDS instance in private subnets
+  Accessible ONLY from ECS Fargate tasks.
+  NOTE: Deploy AFTER the ECS stack so the ECS Security Group export exists.
+
+Parameters:
+  DBInstanceIdentifier:
+    Type: String
+    Default: bookvault-db
+    Description: RDS instance identifier
+
+  DBName:
+    Type: String
+    Default: BookVaultDB
+    Description: Initial database name
+
+  DBUsername:
+    Type: String
+    Default: admin
+    NoEcho: true
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master database password (store in Secrets Manager!)
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Allocated storage in GB
+
+Resources:
+
+  # --------------------
+  # RDS Security Group
+  # --------------------
+  BookVaultRdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL access from ECS Fargate only
+      VpcId: !ImportValue bookvault-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !ImportValue bookvault-ecs-sg-id
+          Description: Allow MySQL from ECS service security group only
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: bookvault-rds-sg
+        - Key: Environment
+          Value: Prod
+
+  # --------------------
+  # DB Subnet Group
+  # --------------------
+  BookVaultDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for BookVault RDS
+      SubnetIds:
+        - !ImportValue bookvault-private-subnet-1-id
+        - !ImportValue bookvault-private-subnet-2-id
+      Tags:
+        - Key: Name
+          Value: bookvault-db-subnet-group
+
+  # --------------------
+  # RDS MySQL Instance
+  # --------------------
+  BookVaultMySQLDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp2
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref BookVaultRdsSecurityGroup
+      DBSubnetGroupName: !Ref BookVaultDbSubnetGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: Name
+          Value: bookvault-mysql-db
+        - Key: Environment
+          Value: Prod
+
+Outputs:
+  RdsEndpoint:
+    Description: RDS Endpoint
+    Value: !GetAtt BookVaultMySQLDB.Endpoint.Address
+    Export:
+      Name: bookvault-rds-endpoint
+
+  RdsPort:
+    Description: RDS Port
+    Value: !GetAtt BookVaultMySQLDB.Endpoint.Port
+    Export:
+      Name: bookvault-rds-port
+
+  DatabaseName:
+    Description: Database Name
+    Value: !Ref DBName
+    Export:
+      Name: bookvault-db-name
+
+  RdsSecurityGroupId:
+    Description: RDS Security Group ID
+    Value: !Ref BookVaultRdsSecurityGroup
+    Export:
+      Name: bookvault-rds-sg-id

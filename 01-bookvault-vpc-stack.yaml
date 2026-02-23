@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - VPC Stack (eu-north-1 / Stockholm)
+  Creates VPC, 2 AZs, Public & Private Subnets,
+  Internet Gateway, and 1 NAT Gateway (Cost Optimized)
+
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.0.1.0/24
+
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.0.2.0/24
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.0.3.0/24
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.0.4.0/24
+
+Resources:
+
+  # --------------------
+  # VPC
+  # --------------------
+  BookVaultVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: bookvault-vpc
+        - Key: Owner
+          Value: BookVault
+        - Key: Environment
+          Value: Prod
+
+  # --------------------
+  # Internet Gateway
+  # --------------------
+  BookVaultIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: bookvault-igw
+
+  BookVaultIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      InternetGatewayId: !Ref BookVaultIGW
+
+  # --------------------
+  # Public Subnets (eu-north-1a, eu-north-1b)
+  # --------------------
+  PublicSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      CidrBlock: !Ref PublicSubnet1CIDR
+      AvailabilityZone: eu-north-1a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: bookvault-public-subnet-az1
+
+  PublicSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      CidrBlock: !Ref PublicSubnet2CIDR
+      AvailabilityZone: eu-north-1b
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: bookvault-public-subnet-az2
+
+  # --------------------
+  # Private Subnets (eu-north-1a, eu-north-1b)
+  # --------------------
+  PrivateSubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      AvailabilityZone: eu-north-1a
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: bookvault-private-subnet-az1
+
+  PrivateSubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      AvailabilityZone: eu-north-1b
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: bookvault-private-subnet-az2
+
+  # --------------------
+  # Elastic IP (ONLY 1 - Cost Optimized)
+  # --------------------
+  NatEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: BookVaultIGWAttachment
+    Properties:
+      Domain: vpc
+
+  # --------------------
+  # NAT Gateway (ONLY 1 - Cost Optimized)
+  # --------------------
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetAZ1
+      Tags:
+        - Key: Name
+          Value: bookvault-nat
+
+  # --------------------
+  # Public Route Table
+  # --------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      Tags:
+        - Key: Name
+          Value: bookvault-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: BookVaultIGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref BookVaultIGW
+
+  PublicSubnetAZ1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetAZ2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAZ2
+      RouteTableId: !Ref PublicRouteTable
+
+  # --------------------
+  # Private Route Table (SHARED - Cost Optimized)
+  # --------------------
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BookVaultVPC
+      Tags:
+        - Key: Name
+          Value: bookvault-private-rt
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetAZ1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetAZ2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAZ2
+      RouteTableId: !Ref PrivateRouteTable
+
+Outputs:
+  VpcId:
+    Value: !Ref BookVaultVPC
+    Export:
+      Name: bookvault-vpc-id
+
+  PublicSubnet1Id:
+    Value: !Ref PublicSubnetAZ1
+    Export:
+      Name: bookvault-public-subnet-1-id
+
+  PublicSubnet2Id:
+    Value: !Ref PublicSubnetAZ2
+    Export:
+      Name: bookvault-public-subnet-2-id
+
+  PrivateSubnet1Id:
+    Value: !Ref PrivateSubnetAZ1
+    Export:
+      Name: bookvault-private-subnet-1-id
+
+  PrivateSubnet2Id:
+    Value: !Ref PrivateSubnetAZ2
+    Export:
+      Name: bookvault-private-subnet-2-id

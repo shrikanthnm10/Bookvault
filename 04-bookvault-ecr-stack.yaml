@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - ECR Stack (eu-north-1 / Stockholm)
+  Creates Elastic Container Registry repository for BookVault Docker images
+
+Parameters:
+  ImageRetentionCount:
+    Type: Number
+    Default: 10
+    Description: Number of untagged images to retain before cleanup
+
+Resources:
+
+  # ─────────────────────────────────────────
+  # ECR Repository
+  # ─────────────────────────────────────────
+  BookVaultECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: bookvault-app
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last ${ImageRetentionCount} untagged images",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${ImageRetentionCount}
+                },
+                "action": {
+                  "type": "expire"
+                }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep last 30 tagged images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["v", "release", "latest"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 30
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCodePipelineAndECS
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:BatchCheckLayerAvailability
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:DescribeRepositories
+              - ecr:GetRepositoryPolicy
+              - ecr:ListImages
+              - ecr:DeleteRepository
+              - ecr:BatchDeleteImage
+              - ecr:SetRepositoryPolicy
+              - ecr:DeleteRepositoryPolicy
+      Tags:
+        - Key: Name
+          Value: bookvault-ecr
+        - Key: Owner
+          Value: BookVault
+        - Key: Environment
+          Value: Prod
+
+Outputs:
+  ECRRepositoryName:
+    Description: ECR Repository Name
+    Value: !Ref BookVaultECRRepository
+    Export:
+      Name: bookvault-ecr-name
+
+  ECRRepositoryUri:
+    Description: ECR Repository URI
+    Value: !GetAtt BookVaultECRRepository.RepositoryUri
+    Export:
+      Name: bookvault-ecr-uri
+
+  ECRRepositoryArn:
+    Description: ECR Repository ARN
+    Value: !GetAtt BookVaultECRRepository.Arn
+    Export:
+      Name: bookvault-ecr-arn

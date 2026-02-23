@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BookVault App - CodeBuild Stack (eu-north-1 / Stockholm)
+  Builds Docker image and pushes to ECR
+
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID (12-digit)
+
+  AWSDefaultRegion:
+    Type: String
+    Description: AWS Region
+    Default: "eu-north-1"
+
+  ImageRepoName:
+    Type: String
+    Description: ECR repository name for the Docker image
+    Default: "bookvault-app"
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner (username or org)
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+    Default: "bookvault-app"
+
+  GitHubBranch:
+    Type: String
+    Default: main
+
+Resources:
+
+  BookVaultBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: codebuild-bookvault-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      Policies:
+        - PolicyName: BookVaultBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:${AWSDefaultRegion}:${AWSAccountId}:log-group:/aws/codebuild/bookvault-build"
+                  - !Sub "arn:aws:logs:${AWSDefaultRegion}:${AWSAccountId}:log-group:/aws/codebuild/bookvault-build:*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: "*"
+
+  BookVaultBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/codebuild/bookvault-build
+      RetentionInDays: 30
+
+  BookVaultBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: bookvault-build
+      Description: "Builds BookVault Docker image and pushes to ECR (eu-north-1)"
+      ServiceRole: !GetAtt BookVaultBuildServiceRole.Arn
+
+      Source:
+        Type: GITHUB
+        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}"
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR in eu-north-1 (Stockholm)...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+                - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+                - echo Image tag will be $IMAGE_TAG
+            build:
+              commands:
+                - echo Building BookVault Docker image...
+                - docker build -t $IMAGE_URI:latest -t $IMAGE_URI:$IMAGE_TAG .
+            post_build:
+              commands:
+                - echo Pushing Docker image to ECR...
+                - docker push $IMAGE_URI:latest
+                - docker push $IMAGE_URI:$IMAGE_TAG
+                - echo Writing image definitions file...
+                - printf '[{"name":"bookvault-app","imageUri":"%s"}]' $IMAGE_URI:$IMAGE_TAG > imagedefinitions.json
+          artifacts:
+            files:
+              - imagedefinitions.json
+              - appspec.yml
+              - start_container.sh
+              - stop_container.sh
+        GitCloneDepth: 1
+        GitSubmodulesConfig:
+          FetchSubmodules: false
+
+      SourceVersion: !Ref GitHubBranch
+
+      Triggers:
+        Webhook: false
+
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:7.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWSDefaultRegion
+            Type: PLAINTEXT
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWSAccountId
+            Type: PLAINTEXT
+          - Name: IMAGE_REPO_NAME
+            Value: !Ref ImageRepoName
+            Type: PLAINTEXT
+
+      Artifacts:
+        Type: NO_ARTIFACTS
+
+      Cache:
+        Type: NO_CACHE
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/bookvault-build
+        S3Logs:
+          Status: DISABLED
+          EncryptionDisabled: false
+
+      TimeoutInMinutes: 60
+      QueuedTimeoutInMinutes: 480
+      BadgeEnabled: false
+      ConcurrentBuildLimit: 1
+
+Outputs:
+  CodeBuildProjectName:
+    Description: Name of the CodeBuild project
+    Value: !Ref BookVaultBuildProject
+    Export:
+      Name: bookvault-codebuild-name
+
+  CodeBuildProjectArn:
+    Description: ARN of the CodeBuild project
+    Value: !GetAtt BookVaultBuildProject.Arn
+
+  ServiceRoleArn:
+    Description: ARN of the CodeBuild service role
+    Value: !GetAtt BookVaultBuildServiceRole.Arn

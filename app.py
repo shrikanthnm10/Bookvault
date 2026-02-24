@@ -47,7 +47,7 @@ def init_db():
 # ─────────────────────────────────────────────────────────────────
 BOOKS = [
     {
-        "title": "To kill someone with words be careful", "emoji": "⚖️", "genre": "Classic Fiction",
+        "title": "To kill...john", "emoji": "⚖️", "genre": "Classic Fiction",
         "year": "1960", "author": "Harper Lee", "pages": "281",
         "tagline": "A Story of Racial Injustice and Moral Growth",
         "bio": "Set in the American South during the 1930s, this Pulitzer Prize-winning novel follows young Scout Finch as her father Atticus defends a Black man unjustly accused of a crime. A profound exploration of racial injustice, class, and human dignity through the innocent eyes of a child.",

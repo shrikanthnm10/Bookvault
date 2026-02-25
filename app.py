@@ -54,7 +54,7 @@ BOOKS = [
         "known_for": ["Pulitzer Prize 1961", "Atticus Finch", "American Classic"],
     },
     {
-        "title": "1984", "emoji": "👁️", "genre": "Dystopian",
+        "title": "1999", "emoji": "👁️", "genre": "Dystopian",
         "year": "1949", "author": "George Orwell", "pages": "328",
         "tagline": "Big Brother Is Watching You",
         "bio": "George Orwell's chilling vision of a totalitarian future where the government controls all information, rewrites history, and surveils every citizen. Winston Smith's desperate struggle against the Party gave the world concepts like doublethink, thoughtcrime, and the memory hole.",

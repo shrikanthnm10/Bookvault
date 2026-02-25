@@ -3,23 +3,23 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
+      - echo "Logging in to ECR"
       - aws --version
       - docker --version
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
       - IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
       - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
-      - echo Image URI: $IMAGE_URI:$IMAGE_TAG
+      - echo "Image URI: $IMAGE_URI:$IMAGE_TAG"
 
   build:
     commands:
-      - echo Building Docker image...
+      - echo "Building Docker image"
       - docker build -t $IMAGE_REPO_NAME .
       - docker tag $IMAGE_REPO_NAME:latest $IMAGE_URI:$IMAGE_TAG
 
   post_build:
     commands:
-      - echo Pushing Docker image...
+      - echo "Pushing image"
       - docker push $IMAGE_URI:$IMAGE_TAG
       - printf '[{"name":"bookvault-container","imageUri":"%s"}]' $IMAGE_URI:$IMAGE_TAG > imagedefinitions.json
 

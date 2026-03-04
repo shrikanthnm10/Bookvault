@@ -1,0 +1,70 @@
+version: 0.2
+# ─────────────────────────────────────────────────────────────────
+# BookVault — Test Stage BuildSpec (testspec.yml)
+# Used by the dedicated CodeBuild Test Project in CodePipeline.
+# CodePipeline will NOT proceed to the Deploy stage if any test fails.
+# ─────────────────────────────────────────────────────────────────
+
+phases:
+
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "=== Installing app dependencies ==="
+      - pip install flask==3.0.3 pymysql==1.1.1
+      - echo "=== Installing test dependencies ==="
+      - pip install pytest==8.2.0 pytest-cov==5.0.0
+
+  pre_build:
+    commands:
+      - echo "=== BookVault Test Stage Starting ==="
+      - echo "Branch/Commit:" $CODEBUILD_RESOLVED_SOURCE_VERSION
+      - python --version
+      - pytest --version
+
+  build:
+    commands:
+      - echo "=== Running BookVault Test Suite ==="
+      - pytest tests/test_app.py
+          --verbose
+          --tb=short
+          --cov=app
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --junitxml=test-results.xml
+      - echo "=== All tests passed! Proceeding to Deploy. ==="
+
+  post_build:
+    commands:
+      - echo "=== Test Stage Complete ==="
+      - |
+        if [ $CODEBUILD_BUILD_SUCCEEDING -eq 1 ]; then
+          echo "✅ TEST STAGE PASSED — Pipeline will proceed to ECS Deploy."
+        else
+          echo "❌ TEST STAGE FAILED — Pipeline will STOP. Fix failing tests before deploying."
+          exit 1
+        fi
+
+reports:
+  BookVaultTestReport:
+    files:
+      - test-results.xml
+    file-format: JUNITXML
+
+  BookVaultCoverageReport:
+    files:
+      - coverage.xml
+    file-format: COBERTURAXML
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - appspec.yml
+    - start_container.sh
+    - stop_container.sh
+  secondary-artifacts:
+    TestResults:
+      files:
+        - test-results.xml
+        - coverage.xml

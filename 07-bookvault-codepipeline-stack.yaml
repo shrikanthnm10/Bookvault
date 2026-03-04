@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  BookVault App - CodePipeline Stack (eu-north-1 / Stockholm)
-  GitHub Webhook → CodeBuild → ECS Deploy
+  BookVault App - CodePipeline Stack WITH Test Stage (eu-north-1 / Stockholm)
+  Pipeline flow: GitHub Source → CodeBuild (Build) → CodeBuild (Test) → ECS (Deploy)
+  Deploy is BLOCKED unless the Test stage succeeds.
 
 Parameters:
   PipelineName:
@@ -23,6 +24,7 @@ Parameters:
   CodeBuildProjectName:
     Type: String
     Default: bookvault-build
+    Description: The existing CodeBuild Build project name (from stack 06)
 
   ECSClusterName:
     Type: String
@@ -39,11 +41,15 @@ Parameters:
       Name of the Secrets Manager secret holding the GitHub OAuth token.
       Secret must have a key called "token".
 
+  AWSAccountId:
+    Type: String
+    Description: Your 12-digit AWS Account ID
+
 Resources:
 
-  # -------------------------
+  # ─────────────────────────────────────────
   # Artifact Bucket
-  # -------------------------
+  # ─────────────────────────────────────────
   PipelineArtifactBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -58,9 +64,105 @@ Resources:
         - Key: Name
           Value: bookvault-pipeline-artifacts
 
-  # -------------------------
-  # IAM Role for CodePipeline
-  # -------------------------
+  # ─────────────────────────────────────────
+  # IAM Role — CodeBuild Test Project
+  # ─────────────────────────────────────────
+  BookVaultTestServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: codebuild-bookvault-test-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BookVaultTestPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:eu-north-1:${AWSAccountId}:log-group:/aws/codebuild/bookvault-test"
+                  - !Sub "arn:aws:logs:eu-north-1:${AWSAccountId}:log-group:/aws/codebuild/bookvault-test:*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt PipelineArtifactBucket.Arn
+                  - !Sub "${PipelineArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource:
+                  - !Sub "arn:aws:codebuild:eu-north-1:${AWSAccountId}:report-group/bookvault-test-*"
+
+  # ─────────────────────────────────────────
+  # CloudWatch Log Group — Test Project
+  # ─────────────────────────────────────────
+  BookVaultTestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/codebuild/bookvault-test
+      RetentionInDays: 30
+
+  # ─────────────────────────────────────────
+  # CodeBuild Project — Test Stage
+  # Runs pytest against the Flask app.
+  # Uses testspec.yml from the repo.
+  # ─────────────────────────────────────────
+  BookVaultTestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: bookvault-test
+      Description: "BookVault Test Stage — runs pytest suite. Deploy is blocked on failure."
+      ServiceRole: !GetAtt BookVaultTestServiceRole.Arn
+
+      Source:
+        # CODEPIPELINE means CodeBuild receives the artifact from the Build stage,
+        # not directly from GitHub. The testspec.yml inside the artifact is used.
+        Type: CODEPIPELINE
+        BuildSpec: testspec.yml
+
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:7.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: false   # No Docker needed — just Python + pytest
+
+      Artifacts:
+        Type: CODEPIPELINE
+
+      Cache:
+        Type: NO_CACHE
+
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/bookvault-test
+        S3Logs:
+          Status: DISABLED
+          EncryptionDisabled: false
+
+      TimeoutInMinutes: 15
+      QueuedTimeoutInMinutes: 30
+
+  # ─────────────────────────────────────────
+  # IAM Role — CodePipeline
+  # ─────────────────────────────────────────
   CodePipelineServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -79,9 +181,10 @@ Resources:
         - arn:aws:iam::aws:policy/IAMReadOnlyAccess
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
 
-  # -------------------------
-  # CodePipeline
-  # -------------------------
+  # ─────────────────────────────────────────
+  # CodePipeline — 4 Stages:
+  #   Source → Build → Test → Deploy
+  # ─────────────────────────────────────────
   BookVaultPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
@@ -95,7 +198,11 @@ Resources:
         Location: !Ref PipelineArtifactBucket
 
       Stages:
-        # -------- SOURCE --------
+
+        # ══════════════════════════════
+        # STAGE 1 — SOURCE
+        # Pulls code from GitHub on push.
+        # ══════════════════════════════
         - Name: Source
           Actions:
             - Name: GitHubSource
@@ -114,10 +221,14 @@ Resources:
                 - Name: SourceOutput
               RunOrder: 1
 
-        # -------- BUILD --------
+        # ══════════════════════════════
+        # STAGE 2 — BUILD
+        # Builds Docker image, pushes to ECR.
+        # Outputs: imagedefinitions.json + all source files (for Test stage).
+        # ══════════════════════════════
         - Name: Build
           Actions:
-            - Name: CodeBuild
+            - Name: DockerBuild
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -131,7 +242,33 @@ Resources:
                 - Name: BuildOutput
               RunOrder: 1
 
-        # -------- DEPLOY --------
+        # ══════════════════════════════
+        # STAGE 3 — TEST  ← NEW
+        # Runs pytest suite via testspec.yml.
+        # If any test fails → pipeline STOPS here.
+        # ECS Deploy in Stage 4 is never triggered.
+        # ══════════════════════════════
+        - Name: Test
+          Actions:
+            - Name: RunTests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BookVaultTestProject
+              InputArtifacts:
+                - Name: BuildOutput      # Receives full source + imagedefinitions.json
+              OutputArtifacts:
+                - Name: TestOutput       # Passes imagedefinitions.json to Deploy stage
+              RunOrder: 1
+
+        # ══════════════════════════════
+        # STAGE 4 — DEPLOY
+        # Only runs if Stage 3 (Test) succeeds.
+        # Deploys the exact image built in Stage 2.
+        # ══════════════════════════════
         - Name: Deploy
           Actions:
             - Name: DeployToECS
@@ -145,12 +282,12 @@ Resources:
                 ServiceName: !Ref ECSServiceName
                 FileName: imagedefinitions.json
               InputArtifacts:
-                - Name: BuildOutput
+                - Name: TestOutput       # Uses artifact from Test stage (not Build directly)
               RunOrder: 1
 
-  # -------------------------
-  # GitHub Webhook
-  # -------------------------
+  # ─────────────────────────────────────────
+  # GitHub Webhook — triggers pipeline on push
+  # ─────────────────────────────────────────
   GitHubWebhook:
     Type: AWS::CodePipeline::Webhook
     Properties:
@@ -174,6 +311,12 @@ Outputs:
   PipelineArn:
     Description: CodePipeline ARN
     Value: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${BookVaultPipeline}
+
+  TestProjectName:
+    Description: CodeBuild Test Project Name
+    Value: !Ref BookVaultTestProject
+    Export:
+      Name: bookvault-codebuild-test-name
 
   ArtifactBucketName:
     Description: S3 Artifact Bucket Name

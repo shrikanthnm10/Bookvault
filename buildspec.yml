@@ -1,29 +1,44 @@
 version: 0.2
+# ─────────────────────────────────────────────────────────────────
+# BookVault — Build Stage BuildSpec (buildspec.yml)
+# Builds Docker image, pushes to ECR, and produces artifacts
+# that are passed to the Test stage and then the Deploy stage.
+# ─────────────────────────────────────────────────────────────────
 
 phases:
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
-      - ACCOUNT_ID=451124812411
-      - REGION=eu-north-1
-      - REPO_NAME=bookvault-app
-      - IMAGE_TAG=latest
-      - REPOSITORY_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO_NAME
-      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
+      - echo "=== Logging in to Amazon ECR (eu-north-1) ==="
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - echo "Image tag will be $IMAGE_TAG"
+      - echo "Image URI will be $IMAGE_URI"
 
   build:
     commands:
-      - echo Building Docker image...
-      - docker build -t $REPO_NAME .
-      - docker tag $REPO_NAME:$IMAGE_TAG $REPOSITORY_URI:$IMAGE_TAG
+      - echo "=== Building BookVault Docker image ==="
+      - docker build -t $IMAGE_URI:latest -t $IMAGE_URI:$IMAGE_TAG .
 
   post_build:
     commands:
-      - echo Pushing image to ECR...
-      - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - echo Creating imagedefinitions.json...
-      - printf '[{"name":"bookvault-app","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - echo "=== Pushing Docker image to ECR ==="
+      - docker push $IMAGE_URI:latest
+      - docker push $IMAGE_URI:$IMAGE_TAG
+      - echo "=== Writing image definitions file for ECS Deploy stage ==="
+      - printf '[{"name":"bookvault-app","imageUri":"%s"}]' $IMAGE_URI:$IMAGE_TAG > imagedefinitions.json
+      - echo "=== Build complete — artifacts ready for Test stage ==="
 
+# imagedefinitions.json is passed through Test stage → Deploy stage
+# so that ECS always deploys the exact image tag built in this run.
 artifacts:
   files:
     - imagedefinitions.json
+    - appspec.yml
+    - testspec.yml
+    - buildspec.yml
+    - start_container.sh
+    - stop_container.sh
+    - tests/**/*
+    - requirements.txt
+    - app.py

@@ -45,7 +45,7 @@ def init_db():
 # BOOK DATA (UI)
 # ─────────────────────────────────────────────────────────────────
 BOOKS = [
-    {"title": "1984", "author": "George Orwell", "genre": "Dystopian"},
+    {"title": "1999", "author": "George Orwell", "genre": "Dystopian"},
     {"title": "The Hobbit", "author": "J.R.R. Tolkien", "genre": "Fantasy"},
     {"title": "Sapiens", "author": "Yuval Noah Harari", "genre": "Non-Fiction"},
 ]
